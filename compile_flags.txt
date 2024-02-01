@@ -1,0 +1,10 @@
+-pedantic
+-std=gnu11
+-Werror
+-Wfloat-conversion
+-Wimplicit-fallthrough
+-Wextra
+-g
+-pthread
+-lglfw
+-lvulkan
