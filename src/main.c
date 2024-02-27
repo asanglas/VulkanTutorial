@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <vulkan/vk_platform.h>
+#include <vulkan/vulkan_core.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -13,6 +15,7 @@ typedef uint32_t u32;
 typedef int8_t i8;
 typedef int16_t i16;
 typedef int32_t i32;
+#define UNUSED(x) (void)(x)
 
 // constants
 const char* WIN_TITLE = "Vulkan";
@@ -33,6 +36,7 @@ typedef struct App App;
 struct App {
     GLFWwindow* window;
     VkInstance vk_instance;
+    VkDebugUtilsMessengerEXT vk_debugmessenger;
 };
 
 // declarations
@@ -42,6 +46,22 @@ void main_loop(App* pApp);
 void cleanup(App* pApp);
 
 void create_instance(App* pApp);
+
+// debug messenger
+VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+                                      const VkAllocationCallbacks* pAllocator,
+                                      VkDebugUtilsMessengerEXT* pDebugMessenger);
+
+void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
+                                   const VkAllocationCallbacks* pAllocator);
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+                                              VkDebugUtilsMessageTypeFlagsEXT message_type,
+                                              const VkDebugUtilsMessengerCallbackDataEXT* pcallback_data,
+                                              void* puser_data);
+
+void setup_debug_messenger(App* pApp);
+void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create_info);
 
 // main
 int main(void)
@@ -57,7 +77,6 @@ int main(void)
 }
 
 // implementations
-
 void init_window(App* pApp)
 {
     glfwInit();
@@ -67,10 +86,13 @@ void init_window(App* pApp)
     pApp->window = glfwCreateWindow(WIN_WIDTH, WIN_HEIGHT, WIN_TITLE, NULL, NULL);
 }
 
-void init_vulkan(App* pApp) { create_instance(pApp); }
+void init_vulkan(App* pApp)
+{
+    create_instance(pApp);
+    setup_debug_messenger(pApp);
+}
 void main_loop(App* pApp)
 {
-
     while (!glfwWindowShouldClose(pApp->window)) {
         glfwPollEvents();
     }
@@ -78,6 +100,12 @@ void main_loop(App* pApp)
 void cleanup(App* pApp)
 {
     printf("Cleaning...\n");
+
+    if (enable_validation_layers) {
+        DestroyDebugUtilsMessengerEXT(pApp->vk_instance, pApp->vk_debugmessenger, NULL);
+        printf("Debug messenger destroyed.\n");
+    }
+
     vkDestroyInstance(pApp->vk_instance, NULL);
     printf("Vulkan instance destroyed.\n");
 
@@ -98,13 +126,13 @@ void create_instance(App* pApp)
         .pNext = NULL,
     };
 
-    // check instance extensions
-    u32 extension_count = 0;
-    vkEnumerateInstanceExtensionProperties(NULL, &extension_count, NULL);
-    VkExtensionProperties* extensions = (VkExtensionProperties*)malloc(sizeof(VkExtensionProperties) * extension_count);
-    vkEnumerateInstanceExtensionProperties(NULL, &extension_count, extensions);
-    for (u32 i = 0; i < extension_count; i += 1) {
-        printf("\tExtension: %s\n", extensions[i].extensionName);
+    // check all available instance extensions
+    u32 all_extension_count = 0;
+    vkEnumerateInstanceExtensionProperties(NULL, &all_extension_count, NULL);
+    VkExtensionProperties all_extensions[all_extension_count];
+    vkEnumerateInstanceExtensionProperties(NULL, &all_extension_count, all_extensions);
+    for (u32 i = 0; i < all_extension_count; i += 1) {
+        printf("\tExtension: %s\n", all_extensions[i].extensionName);
     }
 
     // get required extensions from glfw (window stuff related, surface)
@@ -112,25 +140,41 @@ void create_instance(App* pApp)
     const char** glfw_extensions;
     glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_extension_count);
 
+    // add the debug util extension
+    if (enable_validation_layers) {
+        glfw_extension_count += 1;
+    }
+    printf("glfw_extension_count: %u\n", glfw_extension_count);
+
+    const char* extensions[glfw_extension_count];
+    for (u32 i = 0; i < glfw_extension_count; i += 1) {
+        extensions[i] = glfw_extensions[i];
+    }
+
+    if (enable_validation_layers) {
+        extensions[glfw_extension_count - 1] = "VK_EXT_debug_utils";
+    }
+
     // check that the required extensions are in the available
     u32 found_extensions = 0;
     for (u32 i = 0; i < glfw_extension_count; i += 1) {
-        for (u32 j = 0; j < extension_count; j += 1) {
-            if (strcmp(extensions[j].extensionName, glfw_extensions[i]) == 0) {
-                printf("%s vs %s\n", extensions[j].extensionName, glfw_extensions[i]);
+        for (u32 j = 0; j < all_extension_count; j += 1) {
+            if (strcmp(all_extensions[j].extensionName, extensions[i]) == 0) {
+                printf("%s vs %s\n", all_extensions[j].extensionName, extensions[i]);
                 found_extensions += 1;
             }
         }
     }
     if (found_extensions == glfw_extension_count) {
         printf("All required extensions found!\n");
+    } else {
+        printf("Extension failed\n");
     }
-    free(extensions); // free from heap
 
     // check for layer support
     u32 available_layer_count = 0;
     vkEnumerateInstanceLayerProperties(&available_layer_count, NULL);
-    VkLayerProperties* available_layers = (VkLayerProperties*)malloc(sizeof(VkLayerProperties) * available_layer_count);
+    VkLayerProperties available_layers[available_layer_count];
     vkEnumerateInstanceLayerProperties(&available_layer_count, available_layers);
     u32 found_validation_layers = 0;
     for (u32 i = 0; i < validation_layers_count; i += 1) {
@@ -144,20 +188,27 @@ void create_instance(App* pApp)
     if (found_validation_layers == validation_layers_count) {
         printf("All required validation layers found!\n");
     }
-    free(available_layers); // free from heap
 
     // create info
     VkInstanceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &app_info,
         .enabledExtensionCount = glfw_extension_count,
-        .ppEnabledExtensionNames = glfw_extensions,
+        .ppEnabledExtensionNames = extensions,
     };
+
+    VkDebugUtilsMessengerCreateInfoEXT debug_create_info = {0};
+
     if (enable_validation_layers) {
         create_info.enabledLayerCount = validation_layers_count;
         create_info.ppEnabledLayerNames = validation_layers;
+
+        populateDebugMessengerCreateInfo(&debug_create_info);
+        create_info.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)(&debug_create_info);
+
     } else {
         create_info.enabledLayerCount = 0;
+        create_info.pNext = NULL;
     }
 
     if (vkCreateInstance(&create_info, NULL, &pApp->vk_instance) != VK_SUCCESS) {
@@ -166,4 +217,71 @@ void create_instance(App* pApp)
     }
 
     printf("Vulkan instance created succesfully.\n");
+}
+
+// DEBUG MESSENGER
+// TODO: move to source file
+VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+                                      const VkAllocationCallbacks* pAllocator,
+                                      VkDebugUtilsMessengerEXT* pDebugMessenger)
+{
+    PFN_vkCreateDebugUtilsMessengerEXT func =
+        (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != NULL) {
+        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+
+void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
+                                   const VkAllocationCallbacks* pAllocator)
+{
+    PFN_vkDestroyDebugUtilsMessengerEXT func =
+        (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (func != NULL) {
+        func(instance, debugMessenger, pAllocator);
+    }
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+                                              VkDebugUtilsMessageTypeFlagsEXT message_type,
+                                              const VkDebugUtilsMessengerCallbackDataEXT* pcallback_data,
+                                              void* puser_data)
+{
+    UNUSED(message_severity);
+    UNUSED(message_type);
+    UNUSED(puser_data);
+    printf("[DEBUG MESSENGER]: Validation layer: %s\n", pcallback_data->pMessage);
+    return VK_FALSE;
+}
+
+void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create_info)
+{
+    create_info->sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    create_info->messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                   VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                   VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    create_info->messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    create_info->pfnUserCallback = debug_callback;
+    create_info->pUserData = NULL;
+}
+
+void setup_debug_messenger(App* pApp)
+{
+    if (!enable_validation_layers) {
+        return;
+    }
+
+    VkDebugUtilsMessengerCreateInfoEXT create_info = {0};
+    populateDebugMessengerCreateInfo(&create_info);
+
+    if (CreateDebugUtilsMessengerEXT(pApp->vk_instance, &create_info, NULL, &pApp->vk_debugmessenger) != VK_SUCCESS) {
+        printf("Failed to setup debug messenger!\n");
+        exit(1);
+    }
+
+    printf("Debug messenger set up.\n");
 }
