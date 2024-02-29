@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <time.h>
 #include <vulkan/vk_platform.h>
 #include <vulkan/vulkan_core.h>
 
@@ -17,7 +18,6 @@ typedef int16_t i16;
 typedef int32_t i32;
 #define UNUSED(x) (void)(x)
 
-// constants
 const char* WIN_TITLE = "Vulkan";
 const u32 WIN_WIDTH = 800;
 const u32 WIN_HEIGHT = 600;
@@ -31,12 +31,19 @@ const bool enable_validation_layers = false;
 const bool enable_validation_layers = true;
 #endif
 
-// structs
+// TODO structs
 typedef struct App App;
 struct App {
     GLFWwindow* window;
     VkInstance vk_instance;
     VkDebugUtilsMessengerEXT vk_debugmessenger;
+    VkPhysicalDevice vk_physical_device;
+};
+
+typedef struct QueueFamilyIndeces QueueFamilyIndeces;
+struct QueueFamilyIndeces {
+    u32 graphics_family;
+    u8 is_graphics_family_set; // HACK: mimic the optional in C++?
 };
 
 // declarations
@@ -62,6 +69,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
 
 void setup_debug_messenger(App* pApp);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create_info);
+
+u32 rate_device_suitability(VkPhysicalDevice device);
+void pick_graphics_card(App* pApp);
+
+QueueFamilyIndeces find_families_queue(VkPhysicalDevice device);
 
 // main
 int main(void)
@@ -90,6 +102,7 @@ void init_vulkan(App* pApp)
 {
     create_instance(pApp);
     setup_debug_messenger(pApp);
+    pick_graphics_card(pApp);
 }
 void main_loop(App* pApp)
 {
@@ -284,4 +297,140 @@ void setup_debug_messenger(App* pApp)
     }
 
     printf("Debug messenger set up.\n");
+}
+
+u32 rate_device_suitability(VkPhysicalDevice device)
+{
+    // get the properties of the device (to get the names, etc...)
+    VkPhysicalDeviceProperties device_properties;
+    vkGetPhysicalDeviceProperties(device, &device_properties);
+
+    // get the features of the device (to get the names, etc...)
+    VkPhysicalDeviceFeatures device_features;
+    vkGetPhysicalDeviceFeatures(device, &device_features);
+    printf("\nLooking for device: %s \n", device_properties.deviceName);
+
+    u32 score = 0;
+    if (device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+        score += 1000;
+    }
+
+    // maximum size of textures affects graphics quality
+    score += device_properties.limits.maxImageDimension2D;
+
+    // app cannot function without geometry shaders
+    if (!device_features.geometryShader) {
+        score = 0;
+    }
+
+    // check queue families and look for the graphics bit (for now)
+    QueueFamilyIndeces queue_family_index = find_families_queue(device);
+    if (!queue_family_index.is_graphics_family_set) {
+        printf("Graphics Family not supported!\n");
+        score = 0;
+    }
+
+    return score;
+}
+
+void pick_graphics_card(App* pApp)
+{
+
+    u32 physical_device_count = 0;
+    vkEnumeratePhysicalDevices(pApp->vk_instance, &physical_device_count, NULL);
+    if (physical_device_count == 0) {
+        printf("There are no devices available!");
+        exit(1);
+    }
+    printf("Physical devices count: %u\n", physical_device_count);
+
+    // get the physical devices
+    VkPhysicalDevice physical_devices[physical_device_count];
+    vkEnumeratePhysicalDevices(pApp->vk_instance, &physical_device_count, physical_devices);
+
+    VkPhysicalDevice chosen_physical_device = VK_NULL_HANDLE;
+    u32 physical_device_score = 0;
+    for (u32 i = 0; i < physical_device_count; i += 1) {
+        u32 score = rate_device_suitability(physical_devices[i]);
+        if (score > physical_device_score) {
+            physical_device_score = score;
+            chosen_physical_device = physical_devices[i];
+        }
+    }
+    pApp->vk_physical_device = chosen_physical_device;
+    if (pApp->vk_physical_device == VK_NULL_HANDLE) {
+        printf("Could not find any suitable device!\n");
+        exit(0);
+    }
+
+    VkPhysicalDeviceProperties device_properties;
+    vkGetPhysicalDeviceProperties(pApp->vk_physical_device, &device_properties);
+    printf("Selected Physical Device: %s (with score %u)\n", device_properties.deviceName, physical_device_score);
+}
+// // Provided by VK_VERSION_1_0
+// typedef enum VkQueueFlagBits
+// {
+//     VK_QUEUE_GRAPHICS_BIT = 0x00000001,
+//     VK_QUEUE_COMPUTE_BIT = 0x00000002,
+//     VK_QUEUE_TRANSFER_BIT = 0x00000004,
+//     VK_QUEUE_SPARSE_BINDING_BIT = 0x00000008,
+//     // Provided by VK_VERSION_1_1
+//     VK_QUEUE_PROTECTED_BIT = 0x00000010,
+//     // Provided by VK_KHR_video_decode_queue
+//     VK_QUEUE_VIDEO_DECODE_BIT_KHR = 0x00000020,
+//     // Provided by VK_KHR_video_encode_queue
+//     VK_QUEUE_VIDEO_ENCODE_BIT_KHR = 0x00000040,
+//     // Provided by VK_NV_optical_flow
+//     VK_QUEUE_OPTICAL_FLOW_BIT_NV = 0x00000100,
+// } VkQueueFlagBits;
+
+void print_queue_family_to_string(u32 queue_family)
+{
+    const char* QueueFlagNames[] = {
+        "VK_QUEUE_GRAPHICS_BIT",        "VK_QUEUE_COMPUTE_BIT",   "VK_QUEUE_TRANSFER",
+        "VK_QUEUE_SPARSE_BINDING_BIT",  "VK_QUEUE_PROTECTED_BIT", "VK_QUEUE_VIDEO_DECODE_BIT_KHR",
+        "VK_QUEUE_OPTICAL_FLOW_BIT_NV",
+    };
+    uint32_t QueueFlagMasks[] = {
+        0x00000001, 0x00000002, 0x00000004, 0x00000008, 0x00000010, 0x00000020, 0x00000040, 0x00000100,
+    };
+    uint32_t number_of_flags = sizeof(QueueFlagNames) / sizeof(QueueFlagNames[0]);
+
+    printf("Queue Family %u (binary 0x%08b) has the flags: ", queue_family, queue_family);
+    for (uint32_t i = 0; i < number_of_flags; i += 1) {
+        if (queue_family & QueueFlagMasks[i]) {
+            printf("%s, ", QueueFlagNames[i]);
+        }
+    }
+    printf("\n");
+}
+
+QueueFamilyIndeces find_families_queue(VkPhysicalDevice device)
+{
+    QueueFamilyIndeces indices;
+
+    u32 queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
+
+    VkQueueFamilyProperties queue_family_properties[queue_family_count];
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, queue_family_properties);
+
+    indices.is_graphics_family_set = 0;
+
+    for (u32 i = 0; i < queue_family_count; i += 1) {
+        u32 queue_family = queue_family_properties[i].queueFlags;
+        print_queue_family_to_string(queue_family);
+    }
+    // set the correct flag
+    for (u32 i = 0; i < queue_family_count; i += 1) {
+        if (queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            printf("Family %u has the Graphics Bit", queue_family_properties[i].queueFlags);
+            indices.graphics_family = i;
+            indices.is_graphics_family_set = 1;
+            break;
+        }
+    }
+    printf("\n");
+
+    return indices;
 }
