@@ -32,18 +32,21 @@ const bool enable_validation_layers = true;
 #endif
 
 // TODO structs
+typedef struct QueueFamilyIndices QueueFamilyIndices;
+struct QueueFamilyIndices {
+    u32 graphics_family;
+    u8 is_graphics_family_set; // HACK: mimic the optional in C++?
+};
+
 typedef struct App App;
 struct App {
     GLFWwindow* window;
     VkInstance vk_instance;
     VkDebugUtilsMessengerEXT vk_debugmessenger;
     VkPhysicalDevice vk_physical_device;
-};
-
-typedef struct QueueFamilyIndeces QueueFamilyIndeces;
-struct QueueFamilyIndeces {
-    u32 graphics_family;
-    u8 is_graphics_family_set; // HACK: mimic the optional in C++?
+    QueueFamilyIndices vk_queue_family_indices;
+    VkQueue vk_graphics_queue;
+    VkDevice vk_device; // logical device
 };
 
 // declarations
@@ -72,8 +75,9 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create
 
 u32 rate_device_suitability(VkPhysicalDevice device);
 void pick_graphics_card(App* pApp);
+QueueFamilyIndices find_families_queue(VkPhysicalDevice device);
 
-QueueFamilyIndeces find_families_queue(VkPhysicalDevice device);
+void create_logical_device(App* pApp);
 
 // main
 int main(void)
@@ -103,6 +107,7 @@ void init_vulkan(App* pApp)
     create_instance(pApp);
     setup_debug_messenger(pApp);
     pick_graphics_card(pApp);
+    create_logical_device(pApp);
 }
 void main_loop(App* pApp)
 {
@@ -113,6 +118,9 @@ void main_loop(App* pApp)
 void cleanup(App* pApp)
 {
     printf("Cleaning...\n");
+
+    vkDestroyDevice(pApp->vk_device, NULL);
+    printf("Logical Device destroyed.\n");
 
     if (enable_validation_layers) {
         DestroyDebugUtilsMessengerEXT(pApp->vk_instance, pApp->vk_debugmessenger, NULL);
@@ -323,13 +331,6 @@ u32 rate_device_suitability(VkPhysicalDevice device)
         score = 0;
     }
 
-    // check queue families and look for the graphics bit (for now)
-    QueueFamilyIndeces queue_family_index = find_families_queue(device);
-    if (!queue_family_index.is_graphics_family_set) {
-        printf("Graphics Family not supported!\n");
-        score = 0;
-    }
-
     return score;
 }
 
@@ -360,30 +361,27 @@ void pick_graphics_card(App* pApp)
     pApp->vk_physical_device = chosen_physical_device;
     if (pApp->vk_physical_device == VK_NULL_HANDLE) {
         printf("Could not find any suitable device!\n");
-        exit(0);
+        exit(1);
     }
+
+    // check queue families and look for the graphics bit (for now)
+    printf("Checking queue families...\n");
+    QueueFamilyIndices queue_family_index = find_families_queue(pApp->vk_physical_device);
+    if (!queue_family_index.is_graphics_family_set) {
+        printf("Graphics Family not supported!\n");
+        exit(1);
+    }
+
+    // set the queue family index
+    printf("Setting the queue family index...,\n");
+    pApp->vk_queue_family_indices = queue_family_index;
 
     VkPhysicalDeviceProperties device_properties;
     vkGetPhysicalDeviceProperties(pApp->vk_physical_device, &device_properties);
     printf("Selected Physical Device: %s (with score %u)\n", device_properties.deviceName, physical_device_score);
 }
-// // Provided by VK_VERSION_1_0
-// typedef enum VkQueueFlagBits
-// {
-//     VK_QUEUE_GRAPHICS_BIT = 0x00000001,
-//     VK_QUEUE_COMPUTE_BIT = 0x00000002,
-//     VK_QUEUE_TRANSFER_BIT = 0x00000004,
-//     VK_QUEUE_SPARSE_BINDING_BIT = 0x00000008,
-//     // Provided by VK_VERSION_1_1
-//     VK_QUEUE_PROTECTED_BIT = 0x00000010,
-//     // Provided by VK_KHR_video_decode_queue
-//     VK_QUEUE_VIDEO_DECODE_BIT_KHR = 0x00000020,
-//     // Provided by VK_KHR_video_encode_queue
-//     VK_QUEUE_VIDEO_ENCODE_BIT_KHR = 0x00000040,
-//     // Provided by VK_NV_optical_flow
-//     VK_QUEUE_OPTICAL_FLOW_BIT_NV = 0x00000100,
-// } VkQueueFlagBits;
 
+// A helper function
 void print_queue_family_to_string(u32 queue_family)
 {
     const char* QueueFlagNames[] = {
@@ -405,9 +403,9 @@ void print_queue_family_to_string(u32 queue_family)
     printf("\n");
 }
 
-QueueFamilyIndeces find_families_queue(VkPhysicalDevice device)
+QueueFamilyIndices find_families_queue(VkPhysicalDevice device)
 {
-    QueueFamilyIndeces indices;
+    QueueFamilyIndices indices;
 
     u32 queue_family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
@@ -433,4 +431,46 @@ QueueFamilyIndeces find_families_queue(VkPhysicalDevice device)
     printf("\n");
 
     return indices;
+}
+
+void create_logical_device(App* pApp)
+{
+    // queue info
+    float queue_priority = 1.0;
+    VkDeviceQueueCreateInfo queue_create_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = pApp->vk_queue_family_indices.graphics_family,
+        .queueCount = 1,
+        .pQueuePriorities = &queue_priority,
+    };
+
+    VkPhysicalDeviceFeatures device_features = {0};
+
+    VkDeviceCreateInfo device_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pQueueCreateInfos = &queue_create_info,
+        .queueCreateInfoCount = 1,
+        .pEnabledFeatures = &device_features,
+        .enabledExtensionCount = 0, // For now we don't need device extensions
+    };
+
+    // Device specific layers are not needed anymore in newer versions of Vulkan. Just keep it for backwards
+    // compatibilty
+    if (enable_validation_layers) {
+        device_info.enabledLayerCount = validation_layers_count;
+        device_info.ppEnabledLayerNames = validation_layers;
+    } else {
+        device_info.enabledLayerCount = 0;
+    }
+
+    // create the logical device
+    if (vkCreateDevice(pApp->vk_physical_device, &device_info, NULL, &pApp->vk_device) != VK_SUCCESS) {
+        printf("Could not create logical device!\n");
+        exit(1);
+    }
+
+    // get the graphics family queue and store the handle (we will need it)
+    vkGetDeviceQueue(pApp->vk_device, pApp->vk_queue_family_indices.graphics_family, 0, &pApp->vk_graphics_queue);
+
+    printf("Created logical device!\n");
 }
