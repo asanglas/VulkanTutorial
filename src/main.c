@@ -36,6 +36,9 @@ typedef struct QueueFamilyIndices QueueFamilyIndices;
 struct QueueFamilyIndices {
     u32 graphics_family;
     u8 is_graphics_family_set; // HACK: mimic the optional in C++?
+    u32 present_family;
+    u8 is_present_family_set; // HACK: mimic the optional in C++?
+    u8 is_complete;
 };
 
 typedef struct App App;
@@ -43,9 +46,11 @@ struct App {
     GLFWwindow* window;
     VkInstance vk_instance;
     VkDebugUtilsMessengerEXT vk_debugmessenger;
+    VkSurfaceKHR vk_surface;
     VkPhysicalDevice vk_physical_device;
     QueueFamilyIndices vk_queue_family_indices;
     VkQueue vk_graphics_queue;
+    VkQueue vk_present_queue;
     VkDevice vk_device; // logical device
 };
 
@@ -73,9 +78,11 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBit
 void setup_debug_messenger(App* pApp);
 void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT* create_info);
 
+void create_surface(App* pApp);
+
 u32 rate_device_suitability(VkPhysicalDevice device);
 void pick_graphics_card(App* pApp);
-QueueFamilyIndices find_families_queue(VkPhysicalDevice device);
+QueueFamilyIndices find_families_queue(VkPhysicalDevice device, VkSurfaceKHR surface);
 
 void create_logical_device(App* pApp);
 
@@ -106,6 +113,7 @@ void init_vulkan(App* pApp)
 {
     create_instance(pApp);
     setup_debug_messenger(pApp);
+    create_surface(pApp);
     pick_graphics_card(pApp);
     create_logical_device(pApp);
 }
@@ -127,6 +135,8 @@ void cleanup(App* pApp)
         printf("Debug messenger destroyed.\n");
     }
 
+    vkDestroySurfaceKHR(pApp->vk_instance, pApp->vk_surface, NULL);
+    printf("Vulkan surface destroyed.\n");
     vkDestroyInstance(pApp->vk_instance, NULL);
     printf("Vulkan instance destroyed.\n");
 
@@ -307,6 +317,15 @@ void setup_debug_messenger(App* pApp)
     printf("Debug messenger set up.\n");
 }
 
+void create_surface(App* pApp)
+{
+    if (glfwCreateWindowSurface(pApp->vk_instance, pApp->window, NULL, &pApp->vk_surface) != VK_SUCCESS) {
+        printf("Could not create a surface\n");
+        exit(1);
+    }
+    printf("Created surface.\n");
+}
+
 u32 rate_device_suitability(VkPhysicalDevice device)
 {
     // get the properties of the device (to get the names, etc...)
@@ -316,7 +335,6 @@ u32 rate_device_suitability(VkPhysicalDevice device)
     // get the features of the device (to get the names, etc...)
     VkPhysicalDeviceFeatures device_features;
     vkGetPhysicalDeviceFeatures(device, &device_features);
-    printf("\nLooking for device: %s \n", device_properties.deviceName);
 
     u32 score = 0;
     if (device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
@@ -328,7 +346,7 @@ u32 rate_device_suitability(VkPhysicalDevice device)
 
     // app cannot function without geometry shaders
     if (!device_features.geometryShader) {
-        score = 0;
+        return 0;
     }
 
     return score;
@@ -364,9 +382,13 @@ void pick_graphics_card(App* pApp)
         exit(1);
     }
 
+    VkPhysicalDeviceProperties device_properties;
+    vkGetPhysicalDeviceProperties(pApp->vk_physical_device, &device_properties);
+    printf("Selected Physical Device: %s (with score %u)\n", device_properties.deviceName, physical_device_score);
+
     // check queue families and look for the graphics bit (for now)
     printf("Checking queue families...\n");
-    QueueFamilyIndices queue_family_index = find_families_queue(pApp->vk_physical_device);
+    QueueFamilyIndices queue_family_index = find_families_queue(pApp->vk_physical_device, pApp->vk_surface);
     if (!queue_family_index.is_graphics_family_set) {
         printf("Graphics Family not supported!\n");
         exit(1);
@@ -375,10 +397,6 @@ void pick_graphics_card(App* pApp)
     // set the queue family index
     printf("Setting the queue family index...,\n");
     pApp->vk_queue_family_indices = queue_family_index;
-
-    VkPhysicalDeviceProperties device_properties;
-    vkGetPhysicalDeviceProperties(pApp->vk_physical_device, &device_properties);
-    printf("Selected Physical Device: %s (with score %u)\n", device_properties.deviceName, physical_device_score);
 }
 
 // A helper function
@@ -403,9 +421,12 @@ void print_queue_family_to_string(u32 queue_family)
     printf("\n");
 }
 
-QueueFamilyIndices find_families_queue(VkPhysicalDevice device)
+QueueFamilyIndices find_families_queue(VkPhysicalDevice device, VkSurfaceKHR surface)
 {
     QueueFamilyIndices indices;
+    indices.is_graphics_family_set = 0;
+    indices.is_present_family_set = 0;
+    VkBool32 present_support = false;
 
     u32 queue_family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
@@ -419,13 +440,23 @@ QueueFamilyIndices find_families_queue(VkPhysicalDevice device)
         u32 queue_family = queue_family_properties[i].queueFlags;
         print_queue_family_to_string(queue_family);
     }
-    // set the correct flag
+    // set the correct flag for the graphics family queue
     for (u32 i = 0; i < queue_family_count; i += 1) {
-        if (queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-            printf("Family %u has the Graphics Bit", queue_family_properties[i].queueFlags);
-            indices.graphics_family = i;
-            indices.is_graphics_family_set = 1;
-            break;
+        if (!indices.is_graphics_family_set) {
+            if (queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                printf("Family %u has the Graphics Bit\n", queue_family_properties[i].queueFlags);
+                indices.graphics_family = i;
+                indices.is_graphics_family_set = 1;
+            }
+        }
+
+        if (!indices.is_present_family_set) {
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &present_support);
+            if (present_support) {
+                printf("Family %u has Present support\n", queue_family_properties[i].queueFlags);
+                indices.present_family = i;
+                indices.is_present_family_set = 1;
+            }
         }
     }
     printf("\n");
