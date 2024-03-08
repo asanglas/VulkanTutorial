@@ -23,7 +23,9 @@ const u32 WIN_WIDTH = 800;
 const u32 WIN_HEIGHT = 600;
 
 const u32 validation_layers_count = 1;
+const u32 device_extensions_count = 1;
 const char* validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
+const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 #if NDEBUG
 const bool enable_validation_layers = false;
@@ -31,7 +33,7 @@ const bool enable_validation_layers = false;
 const bool enable_validation_layers = true;
 #endif
 
-// TODO structs
+// Structs
 typedef struct QueueFamilyIndices QueueFamilyIndices;
 struct QueueFamilyIndices {
     u32 graphics_family;
@@ -39,6 +41,15 @@ struct QueueFamilyIndices {
     u32 present_family;
     u8 is_present_family_set; // HACK: mimic the optional in C++?
     u8 is_complete;
+};
+
+typedef struct SwapChainSupportDetails SwapChainSupportDetails;
+struct SwapChainSupportDetails {
+    VkSurfaceCapabilitiesKHR capabilities;
+    VkSurfaceFormatKHR* formats;
+    u32 format_count;
+    VkPresentModeKHR* present_modes;
+    u32 presentation_modes_count;
 };
 
 typedef struct App App;
@@ -52,6 +63,7 @@ struct App {
     VkQueue vk_graphics_queue;
     VkQueue vk_present_queue;
     VkDevice vk_device; // logical device
+    SwapChainSupportDetails vk_swapchain_details;
 };
 
 // declarations
@@ -84,7 +96,11 @@ u32 rate_device_suitability(VkPhysicalDevice device);
 void pick_graphics_card(App* pApp);
 QueueFamilyIndices find_families_queue(VkPhysicalDevice device, VkSurfaceKHR surface);
 
+void get_unique_values(u32* array, u32 n, u32* unique_array,
+                       u32* unique_values_count); // HACK: like set in C++ but much much worse
 void create_logical_device(App* pApp);
+
+SwapChainSupportDetails query_swapchain_support(VkPhysicalDevice device, VkSurfaceKHR surface);
 
 // main
 int main(void)
@@ -162,9 +178,10 @@ void create_instance(App* pApp)
     vkEnumerateInstanceExtensionProperties(NULL, &all_extension_count, NULL);
     VkExtensionProperties all_extensions[all_extension_count];
     vkEnumerateInstanceExtensionProperties(NULL, &all_extension_count, all_extensions);
-    for (u32 i = 0; i < all_extension_count; i += 1) {
-        printf("\tExtension: %s\n", all_extensions[i].extensionName);
-    }
+    // Enumerate all instance extensions
+    // for (u32 i = 0; i < all_extension_count; i += 1) {
+    //     printf("\tExtension: %s\n", all_extensions[i].extensionName);
+    // }
 
     // get required extensions from glfw (window stuff related, surface)
     u32 glfw_extension_count = 0;
@@ -397,6 +414,38 @@ void pick_graphics_card(App* pApp)
     // set the queue family index
     printf("Setting the queue family index...,\n");
     pApp->vk_queue_family_indices = queue_family_index;
+
+    // check for swapchain capability
+    u32 device_available_extensions_count;
+    vkEnumerateDeviceExtensionProperties(pApp->vk_physical_device, NULL, &device_available_extensions_count, NULL);
+    VkExtensionProperties device_available_extensions[device_available_extensions_count];
+    vkEnumerateDeviceExtensionProperties(pApp->vk_physical_device, NULL, &device_available_extensions_count,
+                                         device_available_extensions);
+
+    u32 found_device_extensions = 0;
+    for (u32 i = 0; i < device_extensions_count; i += 1) {
+        for (u32 j = 0; j < device_available_extensions_count; j += 1) {
+            // printf("%s vs %s\n", device_extensions[i], device_available_extensions[j].extensionName);
+            if (strcmp(device_extensions[i], device_available_extensions[j].extensionName) == 0) {
+                printf("Found extension %s\n", device_extensions[i]);
+                found_device_extensions += 1;
+                break;
+            }
+        }
+    }
+    if (found_device_extensions != device_extensions_count) {
+        printf("Not all devices extensions are supported!\n");
+        exit(0);
+    }
+    printf("All required device extensions are supported!\n");
+
+    // check swapchain details
+    SwapChainSupportDetails swapchain_details = query_swapchain_support(pApp->vk_physical_device, pApp->vk_surface);
+    if (swapchain_details.format_count == 0 || swapchain_details.presentation_modes_count == 0) {
+        printf("Not enough formats (0) or present modes (0) available\n");
+        exit(0);
+    }
+    printf("The swapchain is capable\n");
 }
 
 // A helper function
@@ -464,25 +513,69 @@ QueueFamilyIndices find_families_queue(VkPhysicalDevice device, VkSurfaceKHR sur
     return indices;
 }
 
+// Comparison function for qsort
+int compare_u32(const void* a, const void* b) { return (*(u32*)a - *(u32*)b); }
+void get_unique_values(u32* array, u32 n, u32* unique_array, u32* unique_values_count)
+{
+    // sort the array in increaing order
+    qsort(array, n, sizeof(u32), compare_u32);
+    // Find the number of unique values
+
+    if (unique_array == NULL) {
+        *unique_values_count = 1; // at least we have one, the first element
+        for (u32 i = 1; i < n; i++) {
+            if (array[i] != array[i - 1]) {
+                *unique_values_count += 1;
+            }
+        }
+        return;
+    }
+
+    u32 count = 0;
+    unique_array[0] = array[0]; // at least the first array
+    for (u32 i = 1; i < *unique_values_count; i++) {
+        if (array[i] != array[i - 1]) {
+            unique_array[count++] = array[i];
+        }
+    }
+    return;
+}
+
 void create_logical_device(App* pApp)
 {
     // queue info
     float queue_priority = 1.0;
-    VkDeviceQueueCreateInfo queue_create_info = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = pApp->vk_queue_family_indices.graphics_family,
-        .queueCount = 1,
-        .pQueuePriorities = &queue_priority,
-    };
+    u32 all_queue_families[] = {pApp->vk_queue_family_indices.graphics_family,
+                                pApp->vk_queue_family_indices.present_family};
+    u32 all_queue_family_count = sizeof(all_queue_families) / sizeof(all_queue_families[0]); // 2
+    u32 unique_queue_families_count;
+    get_unique_values(all_queue_families, all_queue_family_count, NULL, &unique_queue_families_count);
+    u32 unique_queue_families[unique_queue_families_count];
+    get_unique_values(all_queue_families, all_queue_family_count, unique_queue_families, &unique_queue_families_count);
+    printf("There are %u unique families.\n", unique_queue_families_count);
+
+    VkDeviceQueueCreateInfo queue_create_infos[unique_queue_families_count];
+
+    for (u32 i = 0; i < unique_queue_families_count; i += 1) {
+        VkDeviceQueueCreateInfo queue_create_info = {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = unique_queue_families[i],
+            .queueCount = 1,
+            .pQueuePriorities = &queue_priority,
+        };
+
+        queue_create_infos[i] = queue_create_info;
+    }
 
     VkPhysicalDeviceFeatures device_features = {0};
 
     VkDeviceCreateInfo device_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pQueueCreateInfos = &queue_create_info,
-        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = queue_create_infos,
+        .queueCreateInfoCount = unique_queue_families_count,
         .pEnabledFeatures = &device_features,
-        .enabledExtensionCount = 0, // For now we don't need device extensions
+        .ppEnabledExtensionNames = device_extensions,
+        .enabledExtensionCount = device_extensions_count, // For now we don't need device extensions
     };
 
     // Device specific layers are not needed anymore in newer versions of Vulkan. Just keep it for backwards
@@ -503,5 +596,46 @@ void create_logical_device(App* pApp)
     // get the graphics family queue and store the handle (we will need it)
     vkGetDeviceQueue(pApp->vk_device, pApp->vk_queue_family_indices.graphics_family, 0, &pApp->vk_graphics_queue);
 
+    // get the present family queue and store the handle
+
     printf("Created logical device!\n");
+}
+
+SwapChainSupportDetails query_swapchain_support(VkPhysicalDevice device, VkSurfaceKHR surface)
+{
+    SwapChainSupportDetails details = {0};
+    // 1. Basic surface capabilities (min/max number of images in swap chain, min/max width and height of images)
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
+
+    // 2. Surface formats (pixel format, color space)
+    u32 format_count;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, NULL);
+    details.format_count = format_count;
+    if (format_count != 0) {
+        VkSurfaceFormatKHR surface_formats[format_count];
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, surface_formats);
+        details.formats = surface_formats;
+        printf("There are %u available formats: ", format_count);
+        for (u32 i = 0; i < format_count; i += 1) {
+            printf("%u ", details.formats[i].format); // VK_FORMAT_B8G8R8A8_UNORM and VK_FORMAT_B8G8R8A8_SRGB
+        }
+        printf("\n");
+    }
+    // 3. Available presentation modes
+    u32 presentation_modes_count;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentation_modes_count, NULL);
+    details.presentation_modes_count = presentation_modes_count;
+    if (presentation_modes_count != 0) {
+        VkPresentModeKHR presentation_modes[presentation_modes_count];
+        vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentation_modes_count, presentation_modes);
+        details.present_modes = presentation_modes;
+        printf("There are %u presentation modes: ", presentation_modes_count);
+        for (u32 i = 0; i < presentation_modes_count; i += 1) {
+            printf("%u ", details.present_modes[i]); // VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR,
+                                                     // VK_PRESENT_MODE_FIFO_RELAXED_KHR
+        }
+        printf("\n");
+    }
+
+    return details;
 }
