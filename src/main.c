@@ -64,8 +64,10 @@ struct App {
     VkDevice vk_device; // logical device
     VkSwapchainKHR vk_swapchain;
     VkImage* vk_images;
+    u32 vk_image_count;
     VkFormat vk_format;
     VkExtent2D vk_extent;
+    VkImageView* vk_imageviews;
 };
 
 // declarations
@@ -104,6 +106,7 @@ void create_logical_device(App* pApp);
 
 u32 clamp_u32(u32 value, u32 min, u32 max);
 void create_swapchain(App* pApp);
+void create_imageviews(App* pApp);
 
 // main
 int main(void)
@@ -136,6 +139,7 @@ void init_vulkan(App* pApp)
     pick_graphics_card(pApp);
     create_logical_device(pApp);
     create_swapchain(pApp);
+    create_imageviews(pApp);
 }
 void main_loop(App* pApp)
 {
@@ -147,7 +151,14 @@ void cleanup(App* pApp)
 {
     printf("Cleaning...\n");
 
+    for (u32 i = 0; i < pApp->vk_image_count; i += 1) {
+        vkDestroyImageView(pApp->vk_device, pApp->vk_imageviews[i], NULL);
+    }
+    printf("Image views destroyed...\n");
+    free(pApp->vk_imageviews);
+    printf("Freeing vk_imageview...\n");
     free(pApp->vk_images);
+    printf("Freeing vk_images...\n");
     vkDestroySwapchainKHR(pApp->vk_device, pApp->vk_swapchain, NULL);
     printf("Swapchain destoyed.\n");
 
@@ -749,9 +760,8 @@ void create_swapchain(App* pApp)
     // Retrieve the swapchain images
     printf("Retrieve Swapchain images...\n");
     printf("Old image count %u\n", image_count);
-    vkGetSwapchainImagesKHR(pApp->vk_device, pApp->vk_swapchain, &image_count, NULL);
+    vkGetSwapchainImagesKHR(pApp->vk_device, pApp->vk_swapchain, &image_count, NULL); // we get 3 (2 + 1)
     printf("After image count %u\n", image_count);
-
     // the problem is that with VLA the memory address gets freed when leaving the scope... we have to malloc,
     // apparently...
     VkImage* swapchain_images = (VkImage*)malloc(image_count * sizeof(VkImage));
@@ -759,6 +769,7 @@ void create_swapchain(App* pApp)
     vkGetSwapchainImagesKHR(pApp->vk_device, pApp->vk_swapchain, &image_count, swapchain_images);
 
     pApp->vk_images = swapchain_images;
+    pApp->vk_image_count = image_count;
     pApp->vk_format = surface_format.format;
     pApp->vk_extent = extent;
 }
@@ -770,4 +781,37 @@ u32 clamp_u32(u32 value, u32 min, u32 max)
     if (value >= min)
         return min;
     return 0;
+}
+
+void create_imageviews(App* pApp)
+{
+    // the image views defines how the images should be read and interpreted.
+
+    // again... malloc...
+    VkImageView* image_views = (VkImageView*)malloc(pApp->vk_image_count * sizeof(VkImageView));
+
+    for (u32 i = 0; i < pApp->vk_image_count; i += 1) {
+        VkImageViewCreateInfo create_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = pApp->vk_images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = pApp->vk_format,
+            .components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .components.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .subresourceRange.levelCount = 1,
+            .subresourceRange.baseMipLevel = 0,
+            .subresourceRange.baseArrayLayer = 0,
+            .subresourceRange.layerCount = 1,
+        };
+
+        if (vkCreateImageView(pApp->vk_device, &create_info, NULL, &image_views[i]) != VK_SUCCESS) {
+            printf("failed to create image views!");
+            exit(1);
+        }
+    }
+
+    pApp->vk_imageviews = image_views;
 }
