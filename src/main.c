@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
@@ -43,14 +44,12 @@ struct QueueFamilyIndices {
     u8 is_complete;
 };
 
-typedef struct SwapChainSupportDetails SwapChainSupportDetails;
-struct SwapChainSupportDetails {
-    VkSurfaceCapabilitiesKHR capabilities;
-    VkSurfaceFormatKHR* formats;
-    u32 format_count;
-    VkPresentModeKHR* present_modes;
-    u32 presentation_modes_count;
-};
+// typedef struct SwapChainSupportDetails SwapChainSupportDetails;
+// struct SwapChainSupportDetails {
+//     VkSurfaceCapabilitiesKHR capabilities;
+//     VkSurfaceFormatKHR format;
+//     VkPresentModeKHR present_mode;
+// };
 
 typedef struct App App;
 struct App {
@@ -63,7 +62,10 @@ struct App {
     VkQueue vk_graphics_queue;
     VkQueue vk_present_queue;
     VkDevice vk_device; // logical device
-    SwapChainSupportDetails vk_swapchain_details;
+    VkSwapchainKHR vk_swapchain;
+    VkImage* vk_images;
+    VkFormat vk_format;
+    VkExtent2D vk_extent;
 };
 
 // declarations
@@ -100,7 +102,8 @@ void get_unique_values(u32* array, u32 n, u32* unique_array,
                        u32* unique_values_count); // HACK: like set in C++ but much much worse
 void create_logical_device(App* pApp);
 
-SwapChainSupportDetails query_swapchain_support(VkPhysicalDevice device, VkSurfaceKHR surface);
+u32 clamp_u32(u32 value, u32 min, u32 max);
+void create_swapchain(App* pApp);
 
 // main
 int main(void)
@@ -132,6 +135,7 @@ void init_vulkan(App* pApp)
     create_surface(pApp);
     pick_graphics_card(pApp);
     create_logical_device(pApp);
+    create_swapchain(pApp);
 }
 void main_loop(App* pApp)
 {
@@ -142,6 +146,10 @@ void main_loop(App* pApp)
 void cleanup(App* pApp)
 {
     printf("Cleaning...\n");
+
+    free(pApp->vk_images);
+    vkDestroySwapchainKHR(pApp->vk_device, pApp->vk_swapchain, NULL);
+    printf("Swapchain destoyed.\n");
 
     vkDestroyDevice(pApp->vk_device, NULL);
     printf("Logical Device destroyed.\n");
@@ -438,14 +446,6 @@ void pick_graphics_card(App* pApp)
         exit(0);
     }
     printf("All required device extensions are supported!\n");
-
-    // check swapchain details
-    SwapChainSupportDetails swapchain_details = query_swapchain_support(pApp->vk_physical_device, pApp->vk_surface);
-    if (swapchain_details.format_count == 0 || swapchain_details.presentation_modes_count == 0) {
-        printf("Not enough formats (0) or present modes (0) available\n");
-        exit(0);
-    }
-    printf("The swapchain is capable\n");
 }
 
 // A helper function
@@ -601,41 +601,173 @@ void create_logical_device(App* pApp)
     printf("Created logical device!\n");
 }
 
-SwapChainSupportDetails query_swapchain_support(VkPhysicalDevice device, VkSurfaceKHR surface)
+void create_swapchain(App* pApp)
 {
-    SwapChainSupportDetails details = {0};
-    // 1. Basic surface capabilities (min/max number of images in swap chain, min/max width and height of images)
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
-
+    // *** CHECK SWAPCHAIN DETAILS
+    printf("Creating the swapchain\n");
     // 2. Surface formats (pixel format, color space)
     u32 format_count;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, NULL);
-    details.format_count = format_count;
-    if (format_count != 0) {
-        VkSurfaceFormatKHR surface_formats[format_count];
-        vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &format_count, surface_formats);
-        details.formats = surface_formats;
-        printf("There are %u available formats: ", format_count);
-        for (u32 i = 0; i < format_count; i += 1) {
-            printf("%u ", details.formats[i].format); // VK_FORMAT_B8G8R8A8_UNORM and VK_FORMAT_B8G8R8A8_SRGB
-        }
-        printf("\n");
+    vkGetPhysicalDeviceSurfaceFormatsKHR(pApp->vk_physical_device, pApp->vk_surface, &format_count, NULL);
+    if (format_count == 0) {
+        printf("\tNot enough formats (0) available\n");
+        exit(1);
     }
-    // 3. Available presentation modes
-    u32 presentation_modes_count;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentation_modes_count, NULL);
-    details.presentation_modes_count = presentation_modes_count;
-    if (presentation_modes_count != 0) {
-        VkPresentModeKHR presentation_modes[presentation_modes_count];
-        vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentation_modes_count, presentation_modes);
-        details.present_modes = presentation_modes;
-        printf("There are %u presentation modes: ", presentation_modes_count);
-        for (u32 i = 0; i < presentation_modes_count; i += 1) {
-            printf("%u ", details.present_modes[i]); // VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR,
-                                                     // VK_PRESENT_MODE_FIFO_RELAXED_KHR
-        }
-        printf("\n");
+    printf("\tThere are %u available formats: ", format_count);
+    VkSurfaceFormatKHR surface_formats[format_count];
+    vkGetPhysicalDeviceSurfaceFormatsKHR(pApp->vk_physical_device, pApp->vk_surface, &format_count, surface_formats);
+    for (u32 i = 0; i < format_count; i += 1) {
+        printf("%u ", surface_formats[i].format); // VK_FORMAT_B8G8R8A8_UNORM and VK_FORMAT_B8G8R8A8_SRGB
     }
 
-    return details;
+    // 3. Available presentation modes
+    u32 present_modes_count;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(pApp->vk_physical_device, pApp->vk_surface, &present_modes_count, NULL);
+    if (present_modes_count == 0) {
+        printf("\tNot enough present_modes (0) available\n");
+        exit(1);
+    }
+    VkPresentModeKHR present_modes[present_modes_count];
+    vkGetPhysicalDeviceSurfacePresentModesKHR(pApp->vk_physical_device, pApp->vk_surface, &present_modes_count,
+                                              present_modes);
+    printf("\n\tThere are %u presentation modes: ", present_modes_count);
+    for (u32 i = 0; i < present_modes_count; i += 1) {
+        printf("%u ", present_modes[i]); // VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR,
+                                         // VK_PRESENT_MODE_FIFO_RELAXED_KHR
+    }
+    printf("\n\tThe swapchain is capable\n");
+
+    // Select the format
+    VkSurfaceFormatKHR surface_format;
+    i32 chosen_format = -1;
+    for (u32 i = 0; i < format_count; i += 1) {
+        if (surface_formats[i].format == VK_FORMAT_B8G8R8A8_SRGB &&
+            surface_formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            chosen_format = i;
+            printf("\tFound requirements. Chosing the format %u and colorspace %u\n",
+                   surface_formats[chosen_format].format, surface_formats[chosen_format].colorSpace);
+        }
+    }
+    if (chosen_format == -1) {
+        chosen_format = 0;
+        printf("\tThere are not the required format and colorspace. Chosing the first available one\n");
+        printf("\t\tChosing the format %u and colorspace %u\n", surface_formats[chosen_format].format,
+               surface_formats[chosen_format].colorSpace);
+    }
+    surface_format = surface_formats[chosen_format];
+
+    // Select the present_mode
+    VkPresentModeKHR present_mode;
+    i32 chosen_present_mode = -1;
+    for (u32 i = 0; i < present_modes_count; i += 1) {
+        if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            chosen_present_mode = i;
+            printf("\tChosen the VK_PRESENT_MODE_MAILBOX_KHR");
+            present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+    }
+    if (chosen_present_mode == -1) {
+        printf("\tThere are not the required present modes. Chosing VK_PRESENT_MODE_FIFO_KHR\n");
+        present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    }
+
+    // 1. Basic surface capabilities (min/max number of images in swap chain, min/max width and height of images)
+    VkSurfaceCapabilitiesKHR capabilities;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pApp->vk_physical_device, pApp->vk_surface, &capabilities);
+
+    printf("\tCurrent extent (pixels) (%u, %u)\n", capabilities.currentExtent.width, capabilities.currentExtent.height);
+    printf("\tMin extent: (%u, %u)\n", capabilities.minImageExtent.width, capabilities.minImageExtent.height);
+    printf("\tMax extent: (%u, %u)\n", capabilities.maxImageExtent.width, capabilities.maxImageExtent.height);
+
+    VkExtent2D extent = {0, 0};
+    if (capabilities.currentExtent.width != UINT32_MAX) {
+        extent = capabilities.currentExtent;
+    } else {
+        i32 w, h;
+        glfwGetFramebufferSize(pApp->window, &w, &h);
+        printf("\tGLFW framebuffer size: (%u, %u)\n", w, h);
+        w = clamp_u32(w, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+        h = clamp_u32(h, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+        extent.width = w;
+        extent.height = h;
+    }
+    printf("\tChosen the current extent, which is (%u, %u)\n", extent.width, extent.height);
+
+    printf("\tFormat: %u\n\tColor Space: %u\n", surface_format.format, surface_format.colorSpace);
+    printf("\tPresent Mode: %u\n", present_mode);
+    printf("\tExtent: (%u, %u)\n", extent.width, extent.height);
+    // it is recomended to request at least one more image the minimum capable images
+    u32 image_count = capabilities.minImageCount + 1;
+    if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount) {
+        image_count = capabilities.maxImageCount;
+    }
+
+    VkSwapchainCreateInfoKHR swapchain_info = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = pApp->vk_surface,
+        .minImageCount = image_count,
+        .imageFormat = surface_format.format,
+        .imageColorSpace = surface_format.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+    };
+
+    // set the image sharing mode between the queues
+    u32 queue_family_indeces[] = {pApp->vk_queue_family_indices.graphics_family,
+                                  pApp->vk_queue_family_indices.present_family};
+    if (pApp->vk_queue_family_indices.graphics_family != pApp->vk_queue_family_indices.present_family) {
+        printf("\tThe queue families are not the same, creating two queues\n");
+        swapchain_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        swapchain_info.queueFamilyIndexCount = 2;
+        swapchain_info.pQueueFamilyIndices = queue_family_indeces;
+    } else {
+        printf("\tThe queue families are the same\n");
+        swapchain_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        swapchain_info.queueFamilyIndexCount = 0;  // optional
+        swapchain_info.pQueueFamilyIndices = NULL; // optional
+    }
+
+    // do not transform the image;
+    printf("\tCurrent transform: %u\n", capabilities.currentTransform);
+    swapchain_info.preTransform = capabilities.currentTransform;
+    // the way to blend the window with others. Probably always ommit the alpha
+    swapchain_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+
+    swapchain_info.presentMode = present_mode;
+    swapchain_info.clipped = VK_TRUE;
+    // sometimes, if the window is resized we need to create another swapchain, and we need to refer to the old one. For
+    // now, we just create one.
+    swapchain_info.oldSwapchain = VK_NULL_HANDLE;
+
+    // create the swapchain
+    if (vkCreateSwapchainKHR(pApp->vk_device, &swapchain_info, NULL, &pApp->vk_swapchain) != VK_SUCCESS) {
+        printf("Failed to create the swapchain!\n");
+        exit(1);
+    }
+    printf("Swapchain succesfully created!\n");
+
+    // Retrieve the swapchain images
+    printf("Retrieve Swapchain images...\n");
+    printf("Old image count %u\n", image_count);
+    vkGetSwapchainImagesKHR(pApp->vk_device, pApp->vk_swapchain, &image_count, NULL);
+    printf("After image count %u\n", image_count);
+
+    // the problem is that with VLA the memory address gets freed when leaving the scope... we have to malloc,
+    // apparently...
+    VkImage* swapchain_images = (VkImage*)malloc(image_count * sizeof(VkImage));
+    // VkImage swapchain_images[image_count];
+    vkGetSwapchainImagesKHR(pApp->vk_device, pApp->vk_swapchain, &image_count, swapchain_images);
+
+    pApp->vk_images = swapchain_images;
+    pApp->vk_format = surface_format.format;
+    pApp->vk_extent = extent;
+}
+
+u32 clamp_u32(u32 value, u32 min, u32 max)
+{
+    if (value <= max)
+        return max;
+    if (value >= min)
+        return min;
+    return 0;
 }
