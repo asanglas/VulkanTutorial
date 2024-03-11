@@ -44,6 +44,12 @@ struct QueueFamilyIndices {
     u8 is_complete;
 };
 
+typedef struct Shader Shader;
+struct Shader {
+    char* binary;
+    u32 size;
+};
+
 // typedef struct SwapChainSupportDetails SwapChainSupportDetails;
 // struct SwapChainSupportDetails {
 //     VkSurfaceCapabilitiesKHR capabilities;
@@ -108,6 +114,12 @@ u32 clamp_u32(u32 value, u32 min, u32 max);
 void create_swapchain(App* pApp);
 void create_imageviews(App* pApp);
 
+// GRAPHICS STUFF
+VkShaderModule create_shader_module(App* pApp, char* binary, u32 size);
+Shader read_file(const char* filename);
+
+void create_graphicspipeline(App* pApp);
+
 // main
 int main(void)
 {
@@ -140,6 +152,8 @@ void init_vulkan(App* pApp)
     create_logical_device(pApp);
     create_swapchain(pApp);
     create_imageviews(pApp);
+
+    create_graphicspipeline(pApp);
 }
 void main_loop(App* pApp)
 {
@@ -814,4 +828,96 @@ void create_imageviews(App* pApp)
     }
 
     pApp->vk_imageviews = image_views;
+}
+
+Shader read_file(const char* filename)
+{
+    FILE* file;
+    file = fopen(filename, "rb");
+
+    if (file == NULL) {
+        printf("The file couldn't be opened!\n");
+        exit(1);
+    }
+
+    // Seek to the end of the file to determine its size
+    fseek(file, 0, SEEK_END);
+    unsigned long file_size = ftell(file);
+    printf("Filename %s has size of: %lu\n", filename, file_size);
+    fseek(file, 0, SEEK_SET); // Reset file position indicator to the beginning
+    printf("Postion of the file pointer at: %lu\n", ftell(file));
+
+    char* buffer = (char*)malloc(file_size);
+    fread(buffer, file_size, sizeof(char), file);
+    fclose(file);
+
+    Shader shader;
+    shader.binary = buffer;
+    shader.size = file_size;
+
+    return shader;
+}
+
+VkShaderModule create_shader_module(App* pApp, char* binary, u32 size)
+{
+    UNUSED(binary);
+    UNUSED(size);
+
+    VkShaderModuleCreateInfo shader_info = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = size,
+        .pCode = (u32*)binary,
+    };
+
+    VkShaderModule shader_module = {0};
+    if (vkCreateShaderModule(pApp->vk_device, &shader_info, NULL, &shader_module) != VK_SUCCESS) {
+        printf("Could not create shader module!\n");
+        exit(1);
+    }
+
+    return shader_module;
+}
+
+void create_graphicspipeline(App* pApp)
+{
+    UNUSED(pApp);
+
+    Shader vert_shader_binary = read_file("build/shaders/vertex.spv");
+    Shader frag_shader_binary = read_file("build/shaders/fragment.spv");
+
+    printf("vertex\n");
+    VkShaderModule vert_module = create_shader_module(pApp, vert_shader_binary.binary, vert_shader_binary.size);
+    printf("fragment\n");
+    VkShaderModule frag_module = create_shader_module(pApp, frag_shader_binary.binary, frag_shader_binary.size);
+
+    // Assign the shaders to a specific stage in the graphics pipeline
+    // Start with the vertex shader
+    VkPipelineShaderStageCreateInfo vert_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT, // here
+        .module = vert_module,
+        .pName = "main", // the entry point
+    };
+
+    // The fragment shader
+    VkPipelineShaderStageCreateInfo frag_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT, // here
+        .module = frag_module,
+        .pName = "main", // the entry point
+    };
+
+    // store here the shader stages, the programable parts
+    VkPipelineShaderStageCreateInfo shader_stagess[] = {vert_shader_stage_info, frag_shader_stage_info};
+
+    // The fixed functions, non programable
+
+    // Clean the modules
+    vkDestroyShaderModule(pApp->vk_device, vert_module, NULL);
+    vkDestroyShaderModule(pApp->vk_device, frag_module, NULL);
+
+    // TODO: move it
+    printf("Freeing the binaries files from the heap\n");
+    free(vert_shader_binary.binary);
+    free(frag_shader_binary.binary);
 }
