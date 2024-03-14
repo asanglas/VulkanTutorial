@@ -74,6 +74,7 @@ struct App {
     VkFormat vk_format;
     VkExtent2D vk_extent;
     VkImageView* vk_imageviews;
+    VkPipelineLayout vk_pipeline_layout;
 };
 
 // declarations
@@ -164,6 +165,9 @@ void main_loop(App* pApp)
 void cleanup(App* pApp)
 {
     printf("Cleaning...\n");
+
+    vkDestroyPipelineLayout(pApp->vk_device, pApp->vk_pipeline_layout, NULL);
+    printf("Pipeline layout destoyed.\n");
 
     for (u32 i = 0; i < pApp->vk_image_count; i += 1) {
         vkDestroyImageView(pApp->vk_device, pApp->vk_imageviews[i], NULL);
@@ -845,7 +849,7 @@ Shader read_file(const char* filename)
     unsigned long file_size = ftell(file);
     printf("Filename %s has size of: %lu\n", filename, file_size);
     fseek(file, 0, SEEK_SET); // Reset file position indicator to the beginning
-    printf("Postion of the file pointer at: %lu\n", ftell(file));
+    // printf("Postion of the file pointer at: %lu\n", ftell(file));
 
     char* buffer = (char*)malloc(file_size);
     fread(buffer, file_size, sizeof(char), file);
@@ -885,9 +889,7 @@ void create_graphicspipeline(App* pApp)
     Shader vert_shader_binary = read_file("build/shaders/vertex.spv");
     Shader frag_shader_binary = read_file("build/shaders/fragment.spv");
 
-    printf("vertex\n");
     VkShaderModule vert_module = create_shader_module(pApp, vert_shader_binary.binary, vert_shader_binary.size);
-    printf("fragment\n");
     VkShaderModule frag_module = create_shader_module(pApp, frag_shader_binary.binary, frag_shader_binary.size);
 
     // Assign the shaders to a specific stage in the graphics pipeline
@@ -908,9 +910,132 @@ void create_graphicspipeline(App* pApp)
     };
 
     // store here the shader stages, the programable parts
-    VkPipelineShaderStageCreateInfo shader_stagess[] = {vert_shader_stage_info, frag_shader_stage_info};
+    VkPipelineShaderStageCreateInfo shader_stages[] = {vert_shader_stage_info, frag_shader_stage_info};
 
     // The fixed functions, non programable
+
+    // what is this? states that can be changed without recreating the pipeline at draw time. We set the viewport and
+    // the scissors
+    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    u32 dynamic_states_count = 2;
+    VkPipelineDynamicStateCreateInfo dynamic_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = dynamic_states_count,
+        .pDynamicStates = dynamic_states,
+    };
+
+    // The vertex input. How the vertex data will be passed to the vertex shader
+    VkPipelineVertexInputStateCreateInfo vertex_input_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 0,
+        .pVertexBindingDescriptions = NULL, // Optional
+        .vertexAttributeDescriptionCount = 0,
+        .pVertexAttributeDescriptions = NULL, // Optional
+    };
+
+    // vertex assembler how the vertex data will be read
+    VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+
+    // set the viewport. The part of the frambuffer that the output will be rendered to. For now (and almost always)
+    // will be from (0,0) to (width, height).
+
+    VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = pApp->vk_extent.width,
+        .height = pApp->vk_extent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+
+    // set the scissor. Any pixel outside the scissor will not be considered for the rasterizer
+    VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = pApp->vk_extent,
+    };
+
+    // Since we are doing the viewport and scissor dynamic, we don't need to don't need to pass the viewport and scissor
+    // to be generated at the creation of the pipeline (do not pass to the pipeline layout, basically)
+    VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+
+    // the rasterizer
+    VkPipelineRasterizationStateCreateInfo rasterizer = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .lineWidth = 1.0f,
+        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+        .depthBiasConstantFactor = 0.0f, // Optional
+        .depthBiasClamp = 0.0f,          // Optional
+        .depthBiasSlopeFactor = 0.0f,    // Optional
+    };
+
+    // multisampling
+#if 0
+    VkPipelineMultisampleStateCreateInfo multisampling = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = VK_FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .minSampleShading = 1.0f,          // Optional
+        .pSampleMask = NULL,               // Optional
+        .alphaToCoverageEnable = VK_FALSE, // Optional
+        .alphaToOneEnable = VK_FALSE,      // optional
+    };
+#endif
+
+    // Depth and stencil testing
+    // for now a NULL ptr to the info struct
+
+    // color blending
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = VK_FALSE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,  // Optional
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO, // Optional
+        .colorBlendOp = VK_BLEND_OP_ADD,             // Optional
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,  // Optional
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO, // Optional
+        .alphaBlendOp = VK_BLEND_OP_ADD,             // Optional
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blending = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_COPY, // Optional
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+        .blendConstants[0] = 0.0f, // Optional
+        .blendConstants[1] = 0.0f, // Optional
+        .blendConstants[2] = 0.0f, // Optional
+        .blendConstants[3] = 0.0f, // Optional
+    };
+
+    // Pipeline layout
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 0,         // Optional
+        .pSetLayouts = NULL,         // Optional
+        .pushConstantRangeCount = 0, // Optional
+        .pPushConstantRanges = NULL, // Optional
+    };
+    // create it
+    if (vkCreatePipelineLayout(pApp->vk_device, &pipeline_layout_info, NULL, &pApp->vk_pipeline_layout) != VK_SUCCESS) {
+        printf("Pipeline Layout couldn't create properly\n");
+        exit(1);
+    }
 
     // Clean the modules
     vkDestroyShaderModule(pApp->vk_device, vert_module, NULL);
